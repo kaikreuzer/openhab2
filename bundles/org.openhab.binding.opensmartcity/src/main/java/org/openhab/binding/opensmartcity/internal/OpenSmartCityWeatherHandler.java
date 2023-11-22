@@ -70,7 +70,7 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
     private String myLoc = "";
 
-    private String nearestStationId = "";
+    private @Nullable String nearestStationId;
     private String nearestStationIdStatus = "offline";
 
     private Map<String, Double> onlineLocations = new HashMap<>();
@@ -116,15 +116,17 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
     private void updateSensorValues() {
 
-        if (!nearestStationId.isEmpty()) {
-            String stationOnlineCheckUrl = "v1.1/Things(" + nearestStationId + ")?$select=properties/status";
+        if (nearestStationId != null) {
+            String stationOnlineCheckUrl = "/v1.1/Things(" + nearestStationId + ")?$select=properties/status";
+            logger.debug("Checking if station {} is online", nearestStationId);
             String stationOnlineCheck = apiRequest(stationOnlineCheckUrl);
-            logger.debug("Station Status: {}", stationOnlineCheck);
-            if (!stationOnlineCheck.contains("online")) {
+            logger.debug("Station status: {}", stationOnlineCheck);
+            if (stationOnlineCheck != null && !stationOnlineCheck.contains("online")) {
                 nearestStationIdStatus = "offline";
             }
         }
-        if (nearestStationId.isEmpty() || !("online".equals(nearestStationIdStatus))) {
+        if (nearestStationId == null || !("online".equals(nearestStationIdStatus))) {
+            logger.debug("Checking for nearest station");
             nearestStationId = getNearestOnlineLocation();
             nearestStationIdStatus = "online";
         }
@@ -182,7 +184,7 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
     public class JsonResponse {
     }
 
-    private String apiRequest(String queryPath) {
+    private @Nullable String apiRequest(String queryPath) {
         try {
             String url = bridgeHandler.basePath + queryPath;
             logger.debug("Requesting {}", url);
@@ -197,17 +199,23 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
                 String content = response.getContentAsString();
                 logger.debug("Requesting URL {}", url);
                 logger.debug("Retreived Content {}", content);
+                updateStatus(ThingStatus.ONLINE);
                 return content;
+            } else {
+                // TODO: check exact problem
+                updateStatus(ThingStatus.OFFLINE);
+                logger.debug("HTTP request failed with response code {}: {}", response.getStatus(),
+                        response.getReason());
             }
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
             updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.COMMUNICATION_ERROR);
         }
-        return "";
+        return null;
     }
 
-    private String getNearestOnlineLocation() {
+    private @Nullable String getNearestOnlineLocation() {
         String content = apiRequest(QUERY_LOCATIONS_ONLINE);
-        if (!content.isEmpty()) {
+        if (content != null && !content.isEmpty()) {
             JsonObject jsonResponse = gson.fromJson(content, JsonObject.class);
             if (jsonResponse != null) {
                 int iotCount = Integer.parseInt(jsonResponse.get("@iot.count").toString());
@@ -249,7 +257,7 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
                 }
             }
         }
-        return "";
+        return null;
     }
 
     private Double getDistance(String position) {
