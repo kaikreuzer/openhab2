@@ -116,10 +116,13 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
     private void updateSensorValues() {
 
-        String stationOnlineCheckUrl = "v1.1/Things(33)?$select=properties/status";
-        String stationOnlineCheck = apiRequest(stationOnlineCheckUrl);
-        if (!stationOnlineCheck.contains("online")) {
-            nearestStationIdStatus = "offline";
+        if (!nearestStationId.isEmpty()) {
+            String stationOnlineCheckUrl = "v1.1/Things(" + nearestStationId + ")?$select=properties/status";
+            String stationOnlineCheck = apiRequest(stationOnlineCheckUrl);
+            logger.debug("Station Status: {}", stationOnlineCheck);
+            if (!stationOnlineCheck.contains("online")) {
+                nearestStationIdStatus = "offline";
+            }
         }
         if (nearestStationId.isEmpty() || !("online".equals(nearestStationIdStatus))) {
             nearestStationId = getNearestOnlineLocation();
