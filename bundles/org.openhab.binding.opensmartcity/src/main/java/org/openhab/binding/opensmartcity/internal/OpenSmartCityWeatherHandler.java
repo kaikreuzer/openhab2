@@ -56,9 +56,9 @@ import com.google.gson.JsonObject;
 @NonNullByDefault
 public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
-    private static final String QUERY_LOCATIONS_ONLINE = "/v1.1/Locations?%24expand=Things&%24filter=substringof(%27online%27%2C%20Things%2Fproperties%2Fstatus)";
-
     private static final String QUERY_PATH = "/v1.1/Datastreams?%24top=1&%24expand=Observations(%24orderby%3DphenomenonTime%20desc%3B%24filter%3Dday(now())%20sub%20day(phenomenonTime)%20le%201%20and%20month(now())%20eq%20month(phenomenonTime))&%24filter=substringof(%27lufttemperatur%27%2Cname)%20and%20Thing%2Fproperties%2Fstatus%20eq%20%27online%27%20and%20Thing%2FLocations%2Fname%20eq%20%27Dorper%20Stra%C3%9Fe%20%2F%20Goerdeler%20Stra%C3%9Fe%27";
+
+    private static final String QUERY_LOCATIONS_ONLINE = "/v1.1/Locations?%24expand=Things&%24filter=substringof(%27online%27%2C%20Things%2Fproperties%2Fstatus)";
 
     private final Logger logger = LoggerFactory.getLogger(OpenSmartCityWeatherHandler.class);
 
@@ -74,6 +74,7 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
     private Map<String, Double> onlineLocations = new HashMap<>();
     private Map<String, String> locationNames = new HashMap<>();
+    private Map<String, String> onlineThings = new HashMap<>();
 
     public OpenSmartCityWeatherHandler(Thing thing) {
         super(thing);
@@ -114,10 +115,13 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
     private void updateSensorValues() {
 
-        getNearestOnlineLocation();
+        String nearestStationId = getNearestOnlineLocation();
+        String queryNearestStation = "/v1.1/Datastreams?%24expand=Thing%2C%20Observations(%24top%3D1%3B%24orderby%3DphenomenonTime%20desc)&%24filter=Thing%2F%40iot.id%20eq%20"
+                + nearestStationId
+                + "%20and%20phenomenonTime%20ne%20null%20and%20(substringof(%27lufttemperatur%27%2Cname)%20or%20substringof(%27relative_luftfeuchte%27%2Cname))";
 
         try {
-            String url = bridgeHandler.basePath + QUERY_PATH;
+            String url = bridgeHandler.basePath + queryNearestStation;
             logger.debug("Requesting {}", url);
 
             Request request = bridgeHandler.httpClient.newRequest(url);
@@ -132,7 +136,6 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
 
                 String content = response.getContentAsString();
                 if (content != null) {
-
                     JsonObject jsonResponse = gson.fromJson(content, JsonObject.class);
                     if (jsonResponse != null) {
                         logger.debug("Response: {}", jsonResponse.toString());
@@ -144,19 +147,27 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
                             JsonObject valueObj = gson.fromJson(result.toString(), JsonObject.class);
                             if (valueObj != null) {
                                 JsonElement value = valueObj.get("result");
-                                logger.debug("Value: {}", value);
+                                logger.debug("Temperature of nearest station: {}", value);
+                                Double temperature = value.getAsBigDecimal().doubleValue();
+                                updateState(OpenSmartCityBindingConstants.CHANNEL_TEMPERATURE,
+                                        new QuantityType<Temperature>(temperature, SIUnits.CELSIUS));
+                            }
+                        }
+                        observations = jsonResponse.get("value").getAsJsonArray().get(1);
+                        rs = observations.toString();
+                        jsonResult = gson.fromJson(rs, JsonObject.class);
+                        if (jsonResult != null) {
+                            JsonElement result = jsonResult.get("Observations").getAsJsonArray().get(0);
+                            JsonObject valueObj = gson.fromJson(result.toString(), JsonObject.class);
+                            if (valueObj != null) {
+                                JsonElement value = valueObj.get("result");
+                                logger.debug("Humidity of nearest station: {}", value);
+                                Double humidity = value.getAsBigDecimal().doubleValue();
+                                updateState(OpenSmartCityBindingConstants.CHANNEL_HUMIDITY, new DecimalType(humidity));
                             }
                         }
                     }
                 }
-
-                Double temperature = 11.3;
-                Double humidity = 0.85;
-
-                updateState(OpenSmartCityBindingConstants.CHANNEL_TEMPERATURE,
-                        new QuantityType<Temperature>(temperature, SIUnits.CELSIUS));
-                updateState(OpenSmartCityBindingConstants.CHANNEL_HUMIDITY, new DecimalType(humidity));
-
             } else {
                 // TODO: check exact problem
                 updateStatus(ThingStatus.OFFLINE);
@@ -206,7 +217,7 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
         return "";
     }
 
-    private void getNearestOnlineLocation() {
+    private String getNearestOnlineLocation() {
         String content = apiRequest(QUERY_LOCATIONS_ONLINE);
         if (!content.isEmpty()) {
             JsonObject jsonResponse = gson.fromJson(content, JsonObject.class);
@@ -224,23 +235,36 @@ public class OpenSmartCityWeatherHandler extends BaseThingHandler {
                         if (location != null) {
                             JsonArray coordinates = location.get("coordinates").getAsJsonArray();
                             String position = coordinates.get(1).toString() + "," + coordinates.get(0).toString();
-                            Double distance = distanceCalculation(position);
+                            Double distance = getDistance(position);
                             onlineLocations.put(id, distance);
+                        }
+                        JsonElement thingsElement = jsonResult.get("Things").getAsJsonArray().get(0);
+                        if (thingsElement != null) {
+                            JsonObject thingsObject = gson.fromJson(thingsElement, JsonObject.class);
+                            if (thingsObject != null) {
+                                String thingId = thingsObject.get("@iot.id").getAsString();
+                                onlineThings.put(id, thingId);
+                            }
                         }
                     }
                 }
                 Map<String, Double> sortedMap = onlineLocations.entrySet().stream().sorted(Map.Entry.comparingByValue())
                         .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1,
                                 LinkedHashMap::new));
-                logger.debug("Nächste Messtelle @iot.id:{} / {}", sortedMap.keySet().iterator().next(),
+                logger.debug("Nearest Station @iot.id:{} / {}", sortedMap.keySet().iterator().next(),
                         locationNames.get(sortedMap.keySet().iterator().next()));
-                logger.debug("Entfernung: {}", onlineLocations.get(sortedMap.keySet().iterator().next()));
+                logger.debug("Thing @iot.id:{}", onlineThings.get(sortedMap.keySet().iterator().next()));
+                logger.debug("Distance: {}", onlineLocations.get(sortedMap.keySet().iterator().next()));
+                String thingIotId = onlineThings.get(sortedMap.keySet().iterator().next());
+                if (thingIotId != null) {
+                    return thingIotId;
+                }
             }
         }
+        return "";
     }
 
-    private Double distanceCalculation(String position) {
-
+    private Double getDistance(String position) {
         PointType myPos = new PointType(myLoc);
         PointType stationPos = new PointType(position);
         DecimalType distance = stationPos.distanceFrom(myPos);
